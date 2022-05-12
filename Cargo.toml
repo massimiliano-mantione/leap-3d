@@ -1,0 +1,5 @@
+[workspace]
+edition = "2021"
+resolver = "2"
+
+members = ["leap-capture-frame", "leap-device", "leap-test", "leap-ui", "lib"]
