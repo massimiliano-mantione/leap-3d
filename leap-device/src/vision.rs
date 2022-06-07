@@ -579,7 +579,7 @@ pub const LINE_FEATURES_MAX: usize = 40;
 pub const LINE_SCANNER_WINDOW_MAX: usize = 19;
 pub const LINE_SCANNER_WINDOW_MIN: usize = 3;
 pub const LINE_SCANNER_WINDOW_DEFAULT: usize = 7;
-pub const LINE_NOISE_REDUCTION_WINDOW_MAX: usize = 19;
+pub const LINE_NOISE_REDUCTION_WINDOW_MAX: usize = 8;
 pub const LINE_NOISE_REDUCTION_WINDOW_DEFAULT: usize = 5;
 
 //pub const LINE_SCANNER_WINDOW_CENTER: usize = LINE_SCANNER_WINDOW / 2;
@@ -619,9 +619,6 @@ impl LineScannerParameters {
             self.line_scanner_window = LINE_SCANNER_WINDOW_MIN;
         }
 
-        if self.line_noise_reduction_window % 2 == 0 {
-            self.line_noise_reduction_window += 1;
-        }
         if self.line_noise_reduction_window > LINE_NOISE_REDUCTION_WINDOW_MAX {
             self.line_noise_reduction_window = LINE_NOISE_REDUCTION_WINDOW_MAX;
         }

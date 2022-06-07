@@ -1,11 +1,11 @@
 use leap_device::device::{
     LeapDevice, LeapMode, LeapStream, LEAP_MAX_FRAME_SIZE, LEAP_MAX_X_RESOLUTION,
 };
+use leap_device::processing::{blur_buffer, segment_buffer};
 use leap_device::vision::{
-    apply_noise_reduction, LensModelParams, LensModelParamsData, LineReader, LineScanner,
-    LineScannerParameters, LEAP_BARREL_DISTORTION_MAX, LEAP_BARREL_DISTORTION_MIN,
-    LEAP_Y_OFFSET_MAX, LEAP_Y_OFFSET_MIN, LINE_NOISE_REDUCTION_WINDOW_MAX, LINE_SCANNER_WINDOW_MAX,
-    LINE_SCANNER_WINDOW_MIN,
+    LensModelParams, LensModelParamsData, LineReader, LineScannerParameters,
+    LEAP_BARREL_DISTORTION_MAX, LEAP_BARREL_DISTORTION_MIN, LEAP_Y_OFFSET_MAX, LEAP_Y_OFFSET_MIN,
+    LINE_NOISE_REDUCTION_WINDOW_MAX, LINE_SCANNER_WINDOW_MAX, LINE_SCANNER_WINDOW_MIN,
 };
 use lib::eframe::egui::plot::{Line, Value, Values};
 use lib::eframe::egui::{Color32, Visuals};
@@ -14,6 +14,23 @@ use lib::eframe::{egui, CreationContext};
 
 const LEAP_MODE: LeapMode = LeapMode::m640x480();
 const BUFFER_COUNT: u32 = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessingDisplay {
+    Raw,
+    Blur,
+    Segmented,
+}
+
+impl ProcessingDisplay {
+    pub fn text(&self) -> &'static str {
+        match self {
+            ProcessingDisplay::Raw => "RAW",
+            ProcessingDisplay::Blur => "BLUR",
+            ProcessingDisplay::Segmented => "SEGMENTED",
+        }
+    }
+}
 
 struct UiState<'a> {
     pub lens_data: LensModelParamsData,
@@ -32,8 +49,10 @@ struct UiState<'a> {
     pub scanner_params: LineScannerParameters,
     pub show_left: bool,
     pub show_right: bool,
-    pub show_derivatives: bool,
-    pub show_features: bool,
+    pub display_image: ProcessingDisplay,
+    pub display_line_raw: bool,
+    pub display_line_blur: bool,
+    pub display_line_segmented: bool,
 }
 
 impl<'s> UiState<'s> {
@@ -54,7 +73,7 @@ impl<'s> UiState<'s> {
                 .with_y_left_offset(-6)
                 .with_y_right_offset(7),
             corrected: true,
-            current_line: 0,
+            current_line: img_h / 2,
             tick: 0,
             dev,
             stream,
@@ -68,16 +87,56 @@ impl<'s> UiState<'s> {
             scanner_params: LineScannerParameters::default(),
             show_left: true,
             show_right: true,
-            show_derivatives: true,
-            show_features: true,
+            display_image: ProcessingDisplay::Raw,
+            display_line_raw: true,
+            display_line_blur: false,
+            display_line_segmented: false,
         }
     }
 
-    pub fn left_line_values<'a>(&'a self) -> impl Iterator<Item = (usize, u8)> + 'a {
-        self.current_left_line.iter().copied().enumerate()
+    pub fn left_line_values<'a>(
+        &'a self,
+        display: ProcessingDisplay,
+    ) -> impl Iterator<Item = (usize, u8)> + 'a {
+        let mut processed_line = vec![0; LEAP_MAX_X_RESOLUTION];
+        match display {
+            ProcessingDisplay::Raw => {
+                processed_line.clone_from_slice(&self.current_left_line);
+            }
+            ProcessingDisplay::Blur => blur_buffer(
+                &self.current_left_line,
+                &mut processed_line,
+                self.scanner_params.line_noise_reduction_window,
+            ),
+            ProcessingDisplay::Segmented => segment_buffer(
+                &self.current_left_line,
+                &mut processed_line,
+                self.scanner_params.line_noise_reduction_window,
+            ),
+        }
+        processed_line.into_iter().enumerate()
     }
-    pub fn right_line_values<'a>(&'a self) -> impl Iterator<Item = (usize, u8)> + 'a {
-        self.current_right_line.iter().copied().enumerate()
+    pub fn right_line_values<'a>(
+        &'a self,
+        display: ProcessingDisplay,
+    ) -> impl Iterator<Item = (usize, u8)> + 'a {
+        let mut processed_line = vec![0; LEAP_MAX_X_RESOLUTION];
+        match display {
+            ProcessingDisplay::Raw => {
+                processed_line.clone_from_slice(&self.current_right_line);
+            }
+            ProcessingDisplay::Blur => blur_buffer(
+                &self.current_right_line,
+                &mut processed_line,
+                self.scanner_params.line_noise_reduction_window,
+            ),
+            ProcessingDisplay::Segmented => segment_buffer(
+                &self.current_right_line,
+                &mut processed_line,
+                self.scanner_params.line_noise_reduction_window,
+            ),
+        }
+        processed_line.into_iter().enumerate()
     }
 
     pub fn save_next_frame(&mut self) -> bool {
@@ -95,8 +154,10 @@ impl<'s> UiState<'s> {
                 self.dev.mode().x_res() as usize,
                 self.dev.mode().y_res() as usize,
             );
-            let mut left_line = vec![0u8; x_res];
-            let mut right_line = vec![0u8; x_res];
+            let mut left_line_raw = vec![0u8; x_res];
+            let mut right_line_raw = vec![0u8; x_res];
+            let mut left_line_processed = vec![0u8; x_res];
+            let mut right_line_processed = vec![0u8; x_res];
 
             let mut current_left_line = vec![0u8; x_res];
             let mut current_right_line = vec![0u8; x_res];
@@ -111,26 +172,57 @@ impl<'s> UiState<'s> {
             for y in (0..y_res).into_iter() {
                 if self.corrected {
                     self.reader
-                        .get_left_line_corrected(frame, &mut left_line, y as u32);
+                        .get_left_line_corrected(frame, &mut left_line_raw, y as u32);
                     self.reader
-                        .get_right_line_corrected(frame, &mut right_line, y as u32);
+                        .get_right_line_corrected(frame, &mut right_line_raw, y as u32);
                 } else {
                     self.reader
-                        .get_left_line_direct(frame, &mut left_line, y as u32);
+                        .get_left_line_direct(frame, &mut left_line_raw, y as u32);
                     self.reader
-                        .get_right_line_direct(frame, &mut right_line, y as u32);
+                        .get_right_line_direct(frame, &mut right_line_raw, y as u32);
+                }
+
+                match self.display_image {
+                    ProcessingDisplay::Raw => {
+                        left_line_processed.clone_from_slice(&left_line_raw);
+                        right_line_processed.clone_from_slice(&right_line_raw);
+                    }
+                    ProcessingDisplay::Blur => {
+                        blur_buffer(
+                            &left_line_raw[..],
+                            &mut left_line_processed,
+                            self.scanner_params.line_noise_reduction_window,
+                        );
+                        blur_buffer(
+                            &right_line_raw[..],
+                            &mut right_line_processed,
+                            self.scanner_params.line_noise_reduction_window,
+                        );
+                    }
+                    ProcessingDisplay::Segmented => {
+                        segment_buffer(
+                            &left_line_raw[..],
+                            &mut left_line_processed,
+                            self.scanner_params.line_noise_reduction_window,
+                        );
+                        segment_buffer(
+                            &right_line_raw[..],
+                            &mut right_line_processed,
+                            self.scanner_params.line_noise_reduction_window,
+                        );
+                    }
                 }
 
                 if y == self.current_line {
-                    current_left_line.clone_from_slice(&left_line);
-                    current_right_line.clone_from_slice(&right_line);
+                    current_left_line.clone_from_slice(&left_line_raw);
+                    current_right_line.clone_from_slice(&right_line_raw);
                 }
 
                 let blue = if y == self.current_line { 255 } else { 0 };
 
                 (0..x_res).into_iter().for_each(|x| {
-                    let left = left_line[x as usize];
-                    let right = right_line[x as usize];
+                    let left = left_line_processed[x as usize];
+                    let right = right_line_processed[x as usize];
                     let c = Color32::from_rgb(left, right, blue).to_opaque();
                     image[(x, y)] = c;
                 });
@@ -358,10 +450,22 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 ui.checkbox(&mut self.show_right, "Right");
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.show_derivatives, "Show derivatives");
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.show_features, "Show Features");
+                ui.label("Display:");
+                ui.selectable_value(
+                    &mut self.display_image,
+                    ProcessingDisplay::Raw,
+                    ProcessingDisplay::Raw.text(),
+                );
+                ui.selectable_value(
+                    &mut self.display_image,
+                    ProcessingDisplay::Blur,
+                    ProcessingDisplay::Blur.text(),
+                );
+                ui.selectable_value(
+                    &mut self.display_image,
+                    ProcessingDisplay::Segmented,
+                    ProcessingDisplay::Segmented.text(),
+                );
             });
 
             /*
@@ -387,6 +491,15 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 .current_line
                 .min(current_line_max)
                 .max(current_line_min);
+            ui.horizontal(|ui| {
+                ui.label("Scan Line Display:");
+                ui.checkbox(&mut self.display_line_raw, ProcessingDisplay::Raw.text());
+                ui.checkbox(&mut self.display_line_blur, ProcessingDisplay::Blur.text());
+                ui.checkbox(
+                    &mut self.display_line_segmented,
+                    ProcessingDisplay::Segmented.text(),
+                );
+            });
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 if ui.button("Quit").clicked() {
@@ -422,60 +535,57 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 plot.show(ui, |plot_ui| {
                     // Left line
                     if self.show_left {
-                        plot_ui.line(
-                            Line::new(values_to_line_points(apply_noise_reduction(
-                                self.left_line_values(),
-                                &self.scanner_params,
-                            )))
-                            .color(Color32::RED),
-                        );
+                        if self.display_line_raw {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.left_line_values(ProcessingDisplay::Raw),
+                                ))
+                                .color(Color32::RED),
+                            );
+                        }
+                        if self.display_line_blur {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.left_line_values(ProcessingDisplay::Blur),
+                                ))
+                                .color(Color32::RED),
+                            );
+                        }
+                        if self.display_line_segmented {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.left_line_values(ProcessingDisplay::Segmented),
+                                ))
+                                .color(Color32::RED),
+                            );
+                        }
                     }
 
                     // Right line
                     if self.show_right {
-                        plot_ui.line(
-                            Line::new(values_to_line_points(apply_noise_reduction(
-                                self.right_line_values(),
-                                &self.scanner_params,
-                            )))
-                            .color(Color32::GREEN),
-                        );
-                    }
-
-                    if self.show_derivatives {
-                        if self.show_left {}
-                        if self.show_right {}
-                    }
-
-                    if self.show_features {
-                        // Left features
-                        if self.show_left {
-                            values_to_vertical_lines(
-                                LineScanner::scan(self.left_line_values(), &self.scanner_params)
-                                    .into_iter()
-                                    .map(|f| (f.position as usize, f.value() as u8)),
-                            )
-                            .for_each(|line| {
-                                plot_ui.line(
-                                    line.style(egui::plot::LineStyle::Dotted { spacing: 2.0 })
-                                        .color(Color32::RED),
-                                );
-                            });
+                        if self.display_line_raw {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.right_line_values(ProcessingDisplay::Raw),
+                                ))
+                                .color(Color32::GREEN),
+                            );
                         }
-
-                        // Right features
-                        if self.show_right {
-                            values_to_vertical_lines(
-                                LineScanner::scan(self.right_line_values(), &self.scanner_params)
-                                    .into_iter()
-                                    .map(|f| (f.position as usize, f.value() as u8)),
-                            )
-                            .for_each(|line| {
-                                plot_ui.line(
-                                    line.style(egui::plot::LineStyle::Dotted { spacing: 2.0 })
-                                        .color(Color32::GREEN),
-                                );
-                            });
+                        if self.display_line_blur {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.right_line_values(ProcessingDisplay::Blur),
+                                ))
+                                .color(Color32::GREEN),
+                            );
+                        }
+                        if self.display_line_segmented {
+                            plot_ui.line(
+                                Line::new(values_to_line_points(
+                                    self.right_line_values(ProcessingDisplay::Segmented),
+                                ))
+                                .color(Color32::GREEN),
+                            );
                         }
                     }
                 });
