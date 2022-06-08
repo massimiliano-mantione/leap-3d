@@ -2,13 +2,12 @@ use leap_device::device::{
     LeapDevice, LeapMode, LeapStream, LEAP_MAX_FRAME_SIZE, LEAP_MAX_X_RESOLUTION,
 };
 use leap_device::processing::{
-    blur_buffer, derivative_buffer_i32, derivative_buffer_u8, get_curve_points_blur_n,
-    segment_buffer,
+    blur_n_buffer, derivative_1_n_buffer, derivative_2_n_buffer, get_curve_points_blur_n,
+    segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE, MIN_BLUR_SIZE,
 };
 use leap_device::vision::{
-    LensModelParams, LensModelParamsData, LineReader, LineScannerParameters,
-    LEAP_BARREL_DISTORTION_MAX, LEAP_BARREL_DISTORTION_MIN, LEAP_Y_OFFSET_MAX, LEAP_Y_OFFSET_MIN,
-    LINE_NOISE_REDUCTION_WINDOW_MAX, LINE_SCANNER_WINDOW_MAX, LINE_SCANNER_WINDOW_MIN,
+    LensModelParams, LensModelParamsData, LineReader, LEAP_BARREL_DISTORTION_MAX,
+    LEAP_BARREL_DISTORTION_MIN, LEAP_Y_OFFSET_MAX, LEAP_Y_OFFSET_MIN,
 };
 use lib::eframe::egui::plot::{Line, Value, Values};
 use lib::eframe::egui::{Color32, Visuals};
@@ -18,7 +17,7 @@ use lib::eframe::{egui, CreationContext};
 const LEAP_MODE: LeapMode = LeapMode::m640x480();
 const BUFFER_COUNT: u32 = 4;
 
-const DERIVATIVE_SCALING: i32 = 4;
+const DERIVATIVE_SCALING: i32 = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProcessingDisplay {
@@ -51,7 +50,7 @@ struct UiState<'a> {
     pub capture_frame: bool,
     pub frame_is_captured: bool,
     pub captured_frame: [u8; LEAP_MAX_FRAME_SIZE],
-    pub scanner_params: LineScannerParameters,
+    pub line_processing_params: LineProcessingParameters,
     pub show_left: bool,
     pub show_right: bool,
     pub display_image: ProcessingDisplay,
@@ -90,7 +89,7 @@ impl<'s> UiState<'s> {
             capture_frame: false,
             frame_is_captured: false,
             captured_frame: [0; LEAP_MAX_FRAME_SIZE],
-            scanner_params: LineScannerParameters::default(),
+            line_processing_params: LineProcessingParameters::default(),
             show_left: true,
             show_right: true,
             display_image: ProcessingDisplay::Raw,
@@ -106,15 +105,15 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Raw => {
                 output.copy_from_slice(&self.current_left_line);
             }
-            ProcessingDisplay::Blur => blur_buffer(
+            ProcessingDisplay::Blur => blur_n_buffer(
                 &self.current_left_line,
                 output,
-                self.scanner_params.line_noise_reduction_window,
+                self.line_processing_params.blur_size,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_left_line,
                 output,
-                self.scanner_params.line_noise_reduction_window,
+                self.line_processing_params.blur_size,
             ),
         }
     }
@@ -123,15 +122,15 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Raw => {
                 output.copy_from_slice(&self.current_right_line);
             }
-            ProcessingDisplay::Blur => blur_buffer(
+            ProcessingDisplay::Blur => blur_n_buffer(
                 &self.current_right_line,
                 output,
-                self.scanner_params.line_noise_reduction_window,
+                self.line_processing_params.blur_size,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_right_line,
                 output,
-                self.scanner_params.line_noise_reduction_window,
+                self.line_processing_params.blur_size,
             ),
         }
     }
@@ -185,27 +184,27 @@ impl<'s> UiState<'s> {
                         right_line_processed.clone_from_slice(&right_line_raw);
                     }
                     ProcessingDisplay::Blur => {
-                        blur_buffer(
+                        blur_n_buffer(
                             &left_line_raw[..],
                             &mut left_line_processed,
-                            self.scanner_params.line_noise_reduction_window,
+                            self.line_processing_params.blur_size,
                         );
-                        blur_buffer(
+                        blur_n_buffer(
                             &right_line_raw[..],
                             &mut right_line_processed,
-                            self.scanner_params.line_noise_reduction_window,
+                            self.line_processing_params.blur_size,
                         );
                     }
                     ProcessingDisplay::Segmented => {
                         segment_buffer(
                             &left_line_raw[..],
                             &mut left_line_processed,
-                            self.scanner_params.line_noise_reduction_window,
+                            self.line_processing_params.blur_size,
                         );
                         segment_buffer(
                             &right_line_raw[..],
                             &mut right_line_processed,
-                            self.scanner_params.line_noise_reduction_window,
+                            self.line_processing_params.blur_size,
                         );
                     }
                 }
@@ -352,87 +351,53 @@ impl<'s> lib::eframe::App for UiState<'s> {
             /*
              * Feature thresholds
              */
-            ui.heading("Feature thresholds");
-
+            ui.heading("Line Processing Parameters");
             ui.horizontal(|ui| {
                 if ui.button("-").clicked() {
-                    self.scanner_params.d1_threshold -= 1;
+                    self.line_processing_params.blur_size -= 1;
                 }
                 if ui.button("+").clicked() {
-                    self.scanner_params.d1_threshold += 1;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.scanner_params.d1_threshold, 0..=20)
-                        .text("D1 threshold"),
-                );
-            });
-            ui.horizontal(|ui| {
-                if ui.button("-").clicked() {
-                    self.scanner_params.d3_threshold -= 1;
-                }
-                if ui.button("+").clicked() {
-                    self.scanner_params.d3_threshold += 1;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.scanner_params.d3_threshold, 0..=20)
-                        .text("D3 threshold"),
-                );
-            });
-            ui.horizontal(|ui| {
-                if ui.button("-").clicked() {
-                    self.scanner_params.matching_threshold -= 1;
-                }
-                if ui.button("+").clicked() {
-                    self.scanner_params.matching_threshold += 1;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.scanner_params.matching_threshold, 0..=30)
-                        .text("Matching threshold"),
-                );
-            });
-            ui.horizontal(|ui| {
-                if ui.button("-").clicked() {
-                    self.scanner_params.features_max -= 1;
-                }
-                if ui.button("+").clicked() {
-                    self.scanner_params.features_max += 1;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.scanner_params.features_max, 0..=100)
-                        .text("Max features"),
-                );
-            });
-            ui.horizontal(|ui| {
-                if ui.button("-").clicked() {
-                    self.scanner_params.line_scanner_window -= 2;
-                }
-                if ui.button("+").clicked() {
-                    self.scanner_params.line_scanner_window += 2;
+                    self.line_processing_params.blur_size += 1;
                 }
                 ui.add(
                     egui::Slider::new(
-                        &mut self.scanner_params.line_scanner_window,
-                        LINE_SCANNER_WINDOW_MIN..=LINE_SCANNER_WINDOW_MAX,
+                        &mut self.line_processing_params.blur_size,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
                     )
-                    .text("Scanner window"),
+                    .text("Blur Size"),
                 );
             });
             ui.horizontal(|ui| {
                 if ui.button("-").clicked() {
-                    self.scanner_params.line_noise_reduction_window -= 2;
+                    self.line_processing_params.blur_size_d1 -= 1;
                 }
                 if ui.button("+").clicked() {
-                    self.scanner_params.line_noise_reduction_window += 2;
+                    self.line_processing_params.blur_size_d1 += 1;
                 }
                 ui.add(
                     egui::Slider::new(
-                        &mut self.scanner_params.line_noise_reduction_window,
-                        1..=LINE_NOISE_REDUCTION_WINDOW_MAX,
+                        &mut self.line_processing_params.blur_size_d1,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
                     )
-                    .text("Noise reduction window"),
+                    .text("Blur Size d1"),
                 );
             });
-            self.scanner_params.fix();
+            ui.horizontal(|ui| {
+                if ui.button("-").clicked() {
+                    self.line_processing_params.blur_size_d2 -= 1;
+                }
+                if ui.button("+").clicked() {
+                    self.line_processing_params.blur_size_d2 += 1;
+                }
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.line_processing_params.blur_size_d2,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
+                    )
+                    .text("Blur Size d2"),
+                );
+            });
+            self.line_processing_params.fix();
 
             /*
              * Diagrams selection
@@ -543,9 +508,9 @@ impl<'s> lib::eframe::App for UiState<'s> {
                     .view_aspect(x_res as f32 / (2.0 * 255.0));
 
                 plot.show(ui, |plot_ui| {
-                    let mut line_values = vec![0u8; LEAP_MAX_X_RESOLUTION];
                     // Left line
                     if self.show_left {
+                        let mut line_values = vec![0u8; LEAP_MAX_X_RESOLUTION];
                         self.process_left_line_values(&mut line_values, self.display_line);
 
                         plot_ui.line(
@@ -555,41 +520,48 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             .color(Color32::RED),
                         );
 
-                        if self.display_line_d1 || self.display_line_d2 {
-                            let mut d1 = vec![0i32; LEAP_MAX_X_RESOLUTION];
-                            derivative_buffer_u8(&line_values, &mut d1);
+                        if self.display_line_d1 {
+                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            derivative_1_n_buffer(
+                                &self.current_left_line,
+                                &mut d,
+                                self.line_processing_params.blur_size_d1,
+                            );
 
-                            if self.display_line_d1 {
-                                plot_ui.line(
-                                    Line::new(values_i32_to_line_points(
-                                        d1.iter()
-                                            .copied()
-                                            .map(|v| v * DERIVATIVE_SCALING)
-                                            .enumerate(),
-                                    ))
-                                    .color(Color32::RED),
-                                );
-                            }
+                            plot_ui.line(
+                                Line::new(values_i32_to_line_points(
+                                    d.iter()
+                                        .copied()
+                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .enumerate(),
+                                ))
+                                .color(Color32::RED),
+                            );
+                        }
 
-                            if self.display_line_d2 {
-                                let mut d2 = vec![0i32; LEAP_MAX_X_RESOLUTION];
-                                derivative_buffer_i32(&d1, &mut d2);
-                                plot_ui.line(
-                                    Line::new(values_i32_to_line_points(
-                                        d2.iter()
-                                            .copied()
-                                            .map(|v| v * DERIVATIVE_SCALING)
-                                            .enumerate(),
-                                    ))
-                                    .color(Color32::RED),
-                                );
-                            }
+                        if self.display_line_d2 {
+                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            derivative_2_n_buffer(
+                                &self.current_left_line,
+                                &mut d,
+                                self.line_processing_params.blur_size_d2,
+                            );
+
+                            plot_ui.line(
+                                Line::new(values_i32_to_line_points(
+                                    d.iter()
+                                        .copied()
+                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .enumerate(),
+                                ))
+                                .color(Color32::RED),
+                            );
                         }
 
                         if self.display_curve_points {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_left_line,
-                                self.scanner_params.line_noise_reduction_window,
+                                self.line_processing_params.blur_size,
                             );
 
                             values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
@@ -599,6 +571,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                     // Right line
                     if self.show_right {
+                        let mut line_values = vec![0u8; LEAP_MAX_X_RESOLUTION];
                         self.process_right_line_values(&mut line_values, self.display_line);
 
                         plot_ui.line(
@@ -608,41 +581,48 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             .color(Color32::GREEN),
                         );
 
-                        if self.display_line_d1 || self.display_line_d2 {
-                            let mut d1 = vec![0i32; LEAP_MAX_X_RESOLUTION];
-                            derivative_buffer_u8(&line_values, &mut d1);
+                        if self.display_line_d1 {
+                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            derivative_1_n_buffer(
+                                &self.current_right_line,
+                                &mut d,
+                                self.line_processing_params.blur_size_d1,
+                            );
 
-                            if self.display_line_d1 {
-                                plot_ui.line(
-                                    Line::new(values_i32_to_line_points(
-                                        d1.iter()
-                                            .copied()
-                                            .map(|v| v * DERIVATIVE_SCALING)
-                                            .enumerate(),
-                                    ))
-                                    .color(Color32::GREEN),
-                                );
-                            }
+                            plot_ui.line(
+                                Line::new(values_i32_to_line_points(
+                                    d.iter()
+                                        .copied()
+                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .enumerate(),
+                                ))
+                                .color(Color32::GREEN),
+                            );
+                        }
 
-                            if self.display_line_d2 {
-                                let mut d2 = vec![0i32; LEAP_MAX_X_RESOLUTION];
-                                derivative_buffer_i32(&d1, &mut d2);
-                                plot_ui.line(
-                                    Line::new(values_i32_to_line_points(
-                                        d2.iter()
-                                            .copied()
-                                            .map(|v| v * DERIVATIVE_SCALING)
-                                            .enumerate(),
-                                    ))
-                                    .color(Color32::GREEN),
-                                );
-                            }
+                        if self.display_line_d2 {
+                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            derivative_2_n_buffer(
+                                &self.current_right_line,
+                                &mut d,
+                                self.line_processing_params.blur_size_d2,
+                            );
+
+                            plot_ui.line(
+                                Line::new(values_i32_to_line_points(
+                                    d.iter()
+                                        .copied()
+                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .enumerate(),
+                                ))
+                                .color(Color32::GREEN),
+                            );
                         }
 
                         if self.display_curve_points {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_right_line,
-                                self.scanner_params.line_noise_reduction_window,
+                                self.line_processing_params.blur_size,
                             );
 
                             values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
