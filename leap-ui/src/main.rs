@@ -18,6 +18,8 @@ use lib::eframe::{egui, CreationContext};
 const LEAP_MODE: LeapMode = LeapMode::m640x480();
 const BUFFER_COUNT: u32 = 4;
 
+const DERIVATIVE_SCALING: i32 = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProcessingDisplay {
     Raw,
@@ -99,49 +101,39 @@ impl<'s> UiState<'s> {
         }
     }
 
-    pub fn left_line_values<'a>(
-        &'a self,
-        display: ProcessingDisplay,
-    ) -> impl Iterator<Item = (usize, u8)> + 'a {
-        let mut processed_line = vec![0; LEAP_MAX_X_RESOLUTION];
+    pub fn process_left_line_values(&self, output: &mut [u8], display: ProcessingDisplay) {
         match display {
             ProcessingDisplay::Raw => {
-                processed_line.clone_from_slice(&self.current_left_line);
+                output.copy_from_slice(&self.current_left_line);
             }
             ProcessingDisplay::Blur => blur_buffer(
                 &self.current_left_line,
-                &mut processed_line,
+                output,
                 self.scanner_params.line_noise_reduction_window,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_left_line,
-                &mut processed_line,
+                output,
                 self.scanner_params.line_noise_reduction_window,
             ),
         }
-        processed_line.into_iter().enumerate()
     }
-    pub fn right_line_values<'a>(
-        &'a self,
-        display: ProcessingDisplay,
-    ) -> impl Iterator<Item = (usize, u8)> + 'a {
-        let mut processed_line = vec![0; LEAP_MAX_X_RESOLUTION];
+    pub fn process_right_line_values(&self, output: &mut [u8], display: ProcessingDisplay) {
         match display {
             ProcessingDisplay::Raw => {
-                processed_line.clone_from_slice(&self.current_right_line);
+                output.copy_from_slice(&self.current_right_line);
             }
             ProcessingDisplay::Blur => blur_buffer(
                 &self.current_right_line,
-                &mut processed_line,
+                output,
                 self.scanner_params.line_noise_reduction_window,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_right_line,
-                &mut processed_line,
+                output,
                 self.scanner_params.line_noise_reduction_window,
             ),
         }
-        processed_line.into_iter().enumerate()
     }
 
     pub fn save_next_frame(&mut self) -> bool {
@@ -551,36 +543,45 @@ impl<'s> lib::eframe::App for UiState<'s> {
                     .view_aspect(x_res as f32 / (2.0 * 255.0));
 
                 plot.show(ui, |plot_ui| {
+                    let mut line_values = vec![0u8; LEAP_MAX_X_RESOLUTION];
                     // Left line
                     if self.show_left {
+                        self.process_left_line_values(&mut line_values, self.display_line);
+
                         plot_ui.line(
                             Line::new(values_to_line_points(
-                                self.left_line_values(self.display_line),
+                                line_values.iter().copied().enumerate(),
                             ))
                             .color(Color32::RED),
                         );
 
                         if self.display_line_d1 || self.display_line_d2 {
-                            let mut d1 = vec![0i32; LEAP_MAX_FRAME_SIZE];
-                            derivative_buffer_u8(&self.current_left_line, &mut d1);
+                            let mut d1 = vec![0i32; LEAP_MAX_X_RESOLUTION];
+                            derivative_buffer_u8(&line_values, &mut d1);
 
                             if self.display_line_d1 {
                                 plot_ui.line(
                                     Line::new(values_i32_to_line_points(
-                                        d1.iter().copied().enumerate(),
+                                        d1.iter()
+                                            .copied()
+                                            .map(|v| v * DERIVATIVE_SCALING)
+                                            .enumerate(),
                                     ))
-                                    .color(Color32::GREEN),
+                                    .color(Color32::RED),
                                 );
                             }
 
                             if self.display_line_d2 {
-                                let mut d2 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                                let mut d2 = vec![0i32; LEAP_MAX_X_RESOLUTION];
                                 derivative_buffer_i32(&d1, &mut d2);
                                 plot_ui.line(
                                     Line::new(values_i32_to_line_points(
-                                        d2.iter().copied().enumerate(),
+                                        d2.iter()
+                                            .copied()
+                                            .map(|v| v * DERIVATIVE_SCALING)
+                                            .enumerate(),
                                     ))
-                                    .color(Color32::GREEN),
+                                    .color(Color32::RED),
                                 );
                             }
                         }
@@ -592,40 +593,48 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             );
 
                             values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
-                                .for_each(|l| plot_ui.line(l.color(Color32::GREEN)));
+                                .for_each(|l| plot_ui.line(l.color(Color32::RED)));
                         }
                     }
 
                     // Right line
                     if self.show_right {
+                        self.process_right_line_values(&mut line_values, self.display_line);
+
                         plot_ui.line(
                             Line::new(values_to_line_points(
-                                self.right_line_values(self.display_line),
+                                line_values.iter().copied().enumerate(),
                             ))
                             .color(Color32::GREEN),
                         );
 
                         if self.display_line_d1 || self.display_line_d2 {
-                            let mut d1 = vec![0i32; LEAP_MAX_FRAME_SIZE];
-                            derivative_buffer_u8(&self.current_right_line, &mut d1);
+                            let mut d1 = vec![0i32; LEAP_MAX_X_RESOLUTION];
+                            derivative_buffer_u8(&line_values, &mut d1);
 
                             if self.display_line_d1 {
                                 plot_ui.line(
                                     Line::new(values_i32_to_line_points(
-                                        d1.iter().copied().enumerate(),
+                                        d1.iter()
+                                            .copied()
+                                            .map(|v| v * DERIVATIVE_SCALING)
+                                            .enumerate(),
                                     ))
-                                    .color(Color32::RED),
+                                    .color(Color32::GREEN),
                                 );
                             }
 
                             if self.display_line_d2 {
-                                let mut d2 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                                let mut d2 = vec![0i32; LEAP_MAX_X_RESOLUTION];
                                 derivative_buffer_i32(&d1, &mut d2);
                                 plot_ui.line(
                                     Line::new(values_i32_to_line_points(
-                                        d2.iter().copied().enumerate(),
+                                        d2.iter()
+                                            .copied()
+                                            .map(|v| v * DERIVATIVE_SCALING)
+                                            .enumerate(),
                                     ))
-                                    .color(Color32::RED),
+                                    .color(Color32::GREEN),
                                 );
                             }
                         }
@@ -637,7 +646,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             );
 
                             values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
-                                .for_each(|l| plot_ui.line(l.color(Color32::RED)));
+                                .for_each(|l| plot_ui.line(l.color(Color32::GREEN)));
                         }
                     }
                 });
