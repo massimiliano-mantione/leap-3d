@@ -1,7 +1,10 @@
 use leap_device::device::{
     LeapDevice, LeapMode, LeapStream, LEAP_MAX_FRAME_SIZE, LEAP_MAX_X_RESOLUTION,
 };
-use leap_device::processing::{blur_buffer, segment_buffer};
+use leap_device::processing::{
+    blur_buffer, derivative_buffer_i32, derivative_buffer_u8, get_curve_points_blur_n,
+    segment_buffer,
+};
 use leap_device::vision::{
     LensModelParams, LensModelParamsData, LineReader, LineScannerParameters,
     LEAP_BARREL_DISTORTION_MAX, LEAP_BARREL_DISTORTION_MIN, LEAP_Y_OFFSET_MAX, LEAP_Y_OFFSET_MIN,
@@ -50,9 +53,10 @@ struct UiState<'a> {
     pub show_left: bool,
     pub show_right: bool,
     pub display_image: ProcessingDisplay,
-    pub display_line_raw: bool,
-    pub display_line_blur: bool,
-    pub display_line_segmented: bool,
+    pub display_line: ProcessingDisplay,
+    pub display_line_d1: bool,
+    pub display_line_d2: bool,
+    pub display_curve_points: bool,
 }
 
 impl<'s> UiState<'s> {
@@ -88,9 +92,10 @@ impl<'s> UiState<'s> {
             show_left: true,
             show_right: true,
             display_image: ProcessingDisplay::Raw,
-            display_line_raw: true,
-            display_line_blur: false,
-            display_line_segmented: false,
+            display_line: ProcessingDisplay::Raw,
+            display_line_d1: false,
+            display_line_d2: false,
+            display_curve_points: false,
         }
     }
 
@@ -491,16 +496,29 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 .current_line
                 .min(current_line_max)
                 .max(current_line_min);
+            ui.label("Current Line Display:");
             ui.horizontal(|ui| {
-                ui.label("Scan Line Display:");
-                ui.checkbox(&mut self.display_line_raw, ProcessingDisplay::Raw.text());
-                ui.checkbox(&mut self.display_line_blur, ProcessingDisplay::Blur.text());
-                ui.checkbox(
-                    &mut self.display_line_segmented,
+                ui.selectable_value(
+                    &mut self.display_line,
+                    ProcessingDisplay::Raw,
+                    ProcessingDisplay::Raw.text(),
+                );
+                ui.selectable_value(
+                    &mut self.display_line,
+                    ProcessingDisplay::Blur,
+                    ProcessingDisplay::Blur.text(),
+                );
+                ui.selectable_value(
+                    &mut self.display_line,
+                    ProcessingDisplay::Segmented,
                     ProcessingDisplay::Segmented.text(),
                 );
             });
-
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.display_line_d1, "Line d1/dp");
+                ui.checkbox(&mut self.display_line_d2, "Line d2/dp");
+                ui.checkbox(&mut self.display_curve_points, "Curve Points");
+            });
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 if ui.button("Quit").clicked() {
                     std::process::exit(0);
@@ -535,57 +553,91 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 plot.show(ui, |plot_ui| {
                     // Left line
                     if self.show_left {
-                        if self.display_line_raw {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.left_line_values(ProcessingDisplay::Raw),
-                                ))
-                                .color(Color32::RED),
-                            );
+                        plot_ui.line(
+                            Line::new(values_to_line_points(
+                                self.left_line_values(self.display_line),
+                            ))
+                            .color(Color32::RED),
+                        );
+
+                        if self.display_line_d1 || self.display_line_d2 {
+                            let mut d1 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                            derivative_buffer_u8(&self.current_left_line, &mut d1);
+
+                            if self.display_line_d1 {
+                                plot_ui.line(
+                                    Line::new(values_i32_to_line_points(
+                                        d1.iter().copied().enumerate(),
+                                    ))
+                                    .color(Color32::GREEN),
+                                );
+                            }
+
+                            if self.display_line_d2 {
+                                let mut d2 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                                derivative_buffer_i32(&d1, &mut d2);
+                                plot_ui.line(
+                                    Line::new(values_i32_to_line_points(
+                                        d2.iter().copied().enumerate(),
+                                    ))
+                                    .color(Color32::GREEN),
+                                );
+                            }
                         }
-                        if self.display_line_blur {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.left_line_values(ProcessingDisplay::Blur),
-                                ))
-                                .color(Color32::RED),
+
+                        if self.display_curve_points {
+                            let curve_points = get_curve_points_blur_n(
+                                &self.current_left_line,
+                                self.scanner_params.line_noise_reduction_window,
                             );
-                        }
-                        if self.display_line_segmented {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.left_line_values(ProcessingDisplay::Segmented),
-                                ))
-                                .color(Color32::RED),
-                            );
+
+                            values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
+                                .for_each(|l| plot_ui.line(l.color(Color32::GREEN)));
                         }
                     }
 
                     // Right line
                     if self.show_right {
-                        if self.display_line_raw {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.right_line_values(ProcessingDisplay::Raw),
-                                ))
-                                .color(Color32::GREEN),
-                            );
+                        plot_ui.line(
+                            Line::new(values_to_line_points(
+                                self.right_line_values(self.display_line),
+                            ))
+                            .color(Color32::GREEN),
+                        );
+
+                        if self.display_line_d1 || self.display_line_d2 {
+                            let mut d1 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                            derivative_buffer_u8(&self.current_right_line, &mut d1);
+
+                            if self.display_line_d1 {
+                                plot_ui.line(
+                                    Line::new(values_i32_to_line_points(
+                                        d1.iter().copied().enumerate(),
+                                    ))
+                                    .color(Color32::RED),
+                                );
+                            }
+
+                            if self.display_line_d2 {
+                                let mut d2 = vec![0i32; LEAP_MAX_FRAME_SIZE];
+                                derivative_buffer_i32(&d1, &mut d2);
+                                plot_ui.line(
+                                    Line::new(values_i32_to_line_points(
+                                        d2.iter().copied().enumerate(),
+                                    ))
+                                    .color(Color32::RED),
+                                );
+                            }
                         }
-                        if self.display_line_blur {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.right_line_values(ProcessingDisplay::Blur),
-                                ))
-                                .color(Color32::GREEN),
+
+                        if self.display_curve_points {
+                            let curve_points = get_curve_points_blur_n(
+                                &self.current_right_line,
+                                self.scanner_params.line_noise_reduction_window,
                             );
-                        }
-                        if self.display_line_segmented {
-                            plot_ui.line(
-                                Line::new(values_to_line_points(
-                                    self.right_line_values(ProcessingDisplay::Segmented),
-                                ))
-                                .color(Color32::GREEN),
-                            );
+
+                            values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
+                                .for_each(|l| plot_ui.line(l.color(Color32::RED)));
                         }
                     }
                 });
@@ -607,6 +659,10 @@ fn values_to_vertical_lines(line: impl Iterator<Item = (usize, u8)>) -> impl Ite
             Value::new(pos as f64, val as f64),
         ]))
     })
+}
+
+fn values_i32_to_line_points(line: impl Iterator<Item = (usize, i32)>) -> Values {
+    Values::from_values_iter(line.map(|(pos, val)| Value::new(pos as f64, val as f64)))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

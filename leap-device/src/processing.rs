@@ -110,7 +110,7 @@ fn test_blur_buffer() {
     assert_eq!(output.to_vec(), expected.to_vec());
 }
 
-pub fn derivate<'a>(
+pub fn derivative<'a>(
     input: impl Iterator<Item = (u8, i32)> + 'a,
 ) -> impl Iterator<Item = (u8, i32)> + 'a {
     let mut previous: i32 = 0;
@@ -122,13 +122,27 @@ pub fn derivate<'a>(
 }
 
 #[test]
-fn test_derivate() {
+fn test_derivative() {
     let input: Vec<i32> = vec![5, 9, 7, 6, 3, 0, -2, -5, 3];
     let expected: Vec<i32> = vec![5, 4, -2, -1, -3, -3, -2, -3, 8];
-    let output: Vec<i32> = derivate(input.iter().copied().map(|v| (v as u8, v)))
+    let output: Vec<i32> = derivative(input.iter().copied().map(|v| (v as u8, v)))
         .map(|(_, v)| v)
         .collect();
     assert_eq!(expected, output);
+}
+
+pub fn derivative_buffer_u8(input: &[u8], output: &mut [i32]) {
+    derivative(input.iter().copied().map(|v| (v, v as i32)))
+        .map(|(_, v)| v)
+        .enumerate()
+        .for_each(|(i, v)| output[i] = v)
+}
+
+pub fn derivative_buffer_i32(input: &[i32], output: &mut [i32]) {
+    derivative(input.iter().copied().map(|v| (v as u8, v)))
+        .map(|(_, v)| v)
+        .enumerate()
+        .for_each(|(i, v)| output[i] = v)
 }
 
 pub fn min_max<'a>(
@@ -196,8 +210,8 @@ pub fn get_curve_points_blur_n<'a>(
     let length = input.len();
     let signed_skip: isize = blur_size as isize + 4;
     let blurred = blur_n(input, blur_size).map(|b| (b as u8, b));
-    let d1 = derivate(blurred);
-    let d2 = derivate(d1);
+    let d1 = derivative(blurred);
+    let d2 = derivative(d1);
     let indexed_d2 = d2
         .zip(-signed_skip..)
         .map(|((original, d2), index)| (index, original, d2));
@@ -215,8 +229,8 @@ pub fn get_curve_points_blur<'a, const SIZE: usize>(
     let length = input.len();
     let signed_skip: isize = SIZE as isize + 4;
     let blurred = blur::<SIZE>(input).map(|b| (b as u8, b));
-    let d1 = derivate(blurred);
-    let d2 = derivate(d1);
+    let d1 = derivative(blurred);
+    let d2 = derivative(d1);
     let indexed_d2 = d2
         .zip(-signed_skip..)
         .map(|((original, d2), index)| (index, original, d2));
