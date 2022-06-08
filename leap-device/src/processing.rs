@@ -193,6 +193,7 @@ pub fn get_curve_points_blur_n<'a>(
     input: &'a [u8],
     blur_size: usize,
 ) -> impl Iterator<Item = CurvePoint> + 'a {
+    let length = input.len();
     let signed_skip: isize = blur_size as isize + 4;
     let blurred = blur_n(input, blur_size).map(|b| (b as u8, b));
     let d1 = derivate(blurred);
@@ -200,20 +201,18 @@ pub fn get_curve_points_blur_n<'a>(
     let indexed_d2 = d2
         .zip(-signed_skip..)
         .map(|((original, d2), index)| (index, original, d2));
-    let curve_points = min_max(indexed_d2);
-    curve_points
-        .map(|(index, value, d2)| CurvePoint {
-            index: index as usize,
-            value,
-            d2,
-        })
-        .skip(signed_skip as usize)
-        .take(input.len())
+    let curve_points = min_max(indexed_d2.filter(|(i, _, _)| *i >= 0).take(length));
+    curve_points.map(|(index, value, d2)| CurvePoint {
+        index: index as usize,
+        value,
+        d2,
+    })
 }
 
 pub fn get_curve_points_blur<'a, const SIZE: usize>(
     input: &'a [u8],
 ) -> impl Iterator<Item = CurvePoint> + 'a {
+    let length = input.len();
     let signed_skip: isize = SIZE as isize + 4;
     let blurred = blur::<SIZE>(input).map(|b| (b as u8, b));
     let d1 = derivate(blurred);
@@ -221,15 +220,12 @@ pub fn get_curve_points_blur<'a, const SIZE: usize>(
     let indexed_d2 = d2
         .zip(-signed_skip..)
         .map(|((original, d2), index)| (index, original, d2));
-    let curve_points = min_max(indexed_d2);
-    curve_points
-        .map(|(index, value, d2)| CurvePoint {
-            index: index as usize,
-            value,
-            d2,
-        })
-        .skip(signed_skip as usize)
-        .take(input.len())
+    let curve_points = min_max(indexed_d2.filter(|(i, _, _)| *i >= 0).take(length));
+    curve_points.map(|(index, value, d2)| CurvePoint {
+        index: index as usize,
+        value,
+        d2,
+    })
 }
 
 pub fn segment_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
@@ -238,7 +234,6 @@ pub fn segment_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
     curve_points.push(CurvePoint::zero(0, input[0]));
     curve_points.extend(get_curve_points_blur_n(input, blur_size));
     curve_points.push(CurvePoint::zero(length - 1, input[length - 1]));
-
     let mut points_iter = curve_points.into_iter();
     let mut current = points_iter.next().unwrap();
     for next in points_iter {
@@ -251,8 +246,19 @@ pub fn segment_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
         for i in 0..delta_index {
             let index = (current_index + i) as usize;
             let value = current_value + (i * delta_value / delta_index);
-            output[index] = value as u8;
+            if index < output.len() {
+                output[index] = value as u8;
+            }
         }
         current = next;
     }
+}
+
+#[test]
+fn test_segment_buffer() {
+    let input: Vec<u8> = vec![1, 2, 7, 6, 5, 0, 0, 3, 7];
+    let expected: Vec<u8> = vec![1, 2, 7, 6, 5, 0, 0, 3, 7];
+    let mut output = [0u8; 9];
+    segment_buffer(&input, &mut output, 1);
+    assert_eq!(expected, output);
 }
