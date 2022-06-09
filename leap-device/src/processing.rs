@@ -130,8 +130,9 @@ fn test_tick_n() {
     assert_eq!(sum, 0);
 }
 
-pub fn blur_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = i32> + 'a {
+pub fn blur_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = u8> + 'a {
     let fill = input[0];
+    let tail = input[input.len() - 1];
     let mut pre_window = BlurHalfWindow::<8>::new_u8(fill);
     let mut pre_sum: i32 = (fill as i32) * (blur_size as i32);
     let mut post_window = BlurHalfWindow::<8>::new_u8(fill);
@@ -139,16 +140,17 @@ pub fn blur_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = i32
     let mut current: u8 = fill;
     let factor: i32 = (blur_size as i32 * 2) + 1;
 
-    input.iter().copied().chain(repeat(0)).map(move |value| {
+    input.iter().copied().chain(repeat(tail)).map(move |value| {
         (_, post_sum) = post_window.tick_u8_n(current, post_sum, blur_size);
         (current, pre_sum) = pre_window.tick_u8_n(value, pre_sum, blur_size);
         let current_blurred = current as i32 + pre_sum + post_sum;
-        current_blurred / factor
+        (current_blurred / factor) as u8
     })
 }
 
-pub fn blur<'a, const SIZE: usize>(input: &'a [u8]) -> impl Iterator<Item = i32> + 'a {
+pub fn blur<'a, const SIZE: usize>(input: &'a [u8]) -> impl Iterator<Item = u8> + 'a {
     let fill = input[0];
+    let tail = input[input.len() - 1];
     let mut pre_window = BlurHalfWindow::<SIZE>::new_u8(fill);
     let mut pre_sum: i32 = (fill as i32) * (SIZE as i32);
     let mut post_window = BlurHalfWindow::<SIZE>::new_u8(fill);
@@ -156,11 +158,11 @@ pub fn blur<'a, const SIZE: usize>(input: &'a [u8]) -> impl Iterator<Item = i32>
     let mut current: u8 = fill;
     let factor: i32 = (SIZE as i32 * 2) + 1;
 
-    input.iter().copied().chain(repeat(0)).map(move |value| {
+    input.iter().copied().chain(repeat(tail)).map(move |value| {
         (_, post_sum) = post_window.tick_u8(current, post_sum);
         (current, pre_sum) = pre_window.tick_u8(value, pre_sum);
         let current_blurred = current as i32 + pre_sum + post_sum;
-        current_blurred / factor
+        (current_blurred / factor) as u8
     })
 }
 
@@ -169,14 +171,23 @@ pub fn blur_n_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
         .skip(blur_size)
         .take(input.len())
         .enumerate()
-        .for_each(|(i, v)| output[i] = v as u8);
+        .for_each(|(i, v)| output[i] = v);
 }
 
 #[test]
-fn test_blur_buffer() {
+fn test_blur_buffer_flat() {
     let input: [u8; 9] = [9, 9, 9, 9, 9, 9, 9, 9, 9];
     let mut output = [0u8; 9];
-    let expected: [u8; 9] = [5, 6, 7, 8, 9, 8, 7, 6, 5];
+    let expected: [u8; 9] = [9, 9, 9, 9, 9, 9, 9, 9, 9];
+    blur_n_buffer(&input, &mut output, 4);
+    assert_eq!(output.to_vec(), expected.to_vec());
+}
+
+#[test]
+fn test_blur_buffer_spike() {
+    let input: [u8; 9] = [9, 9, 9, 9, 18, 9, 9, 9, 9];
+    let mut output = [0u8; 9];
+    let expected: [u8; 9] = [10, 10, 10, 10, 10, 10, 10, 10, 10];
     blur_n_buffer(&input, &mut output, 4);
     assert_eq!(output.to_vec(), expected.to_vec());
 }
@@ -185,8 +196,11 @@ fn scale_to_small_i8(v: i32) -> i8 {
     (((v >> 1) & 0xf0) | (v & 0x0f)) as i8
 }
 
-pub fn derivative_1_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = i8> + 'a {
-    let mut previous_value = input[0] as i32;
+pub fn derivative_u8_n(
+    input: impl Iterator<Item = u8>,
+    blur_size: usize,
+) -> impl Iterator<Item = i8> {
+    let mut previous_value = 0i32;
     let mut pre_window = BlurHalfWindow::<8>::new_i8(0);
     let mut pre_sum: i32 = 0;
     let mut post_window = BlurHalfWindow::<8>::new_i8(0);
@@ -194,7 +208,7 @@ pub fn derivative_1_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<It
     let mut current: i8 = 0;
     let factor: i32 = (blur_size as i32 * 2) + 1;
 
-    input.iter().copied().chain(repeat(0)).map(move |value| {
+    input.chain(repeat(0)).map(move |value| {
         let value = value as i32;
         let current_d1 = value - previous_value;
         previous_value = value;
@@ -206,17 +220,11 @@ pub fn derivative_1_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<It
     })
 }
 
-pub fn derivative_1_n_buffer(input: &[u8], output: &mut [i8], blur_size: usize) {
-    derivative_1_n(input, blur_size)
-        .skip(blur_size)
-        .take(input.len())
-        .enumerate()
-        .for_each(|(i, v)| output[i] = v);
-}
-
-pub fn derivative_2_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = i8> + 'a {
-    let mut previous_value = input[0] as i32;
-    let mut previous_d1 = 0i32;
+pub fn derivative_i8_n(
+    input: impl Iterator<Item = i8>,
+    blur_size: usize,
+) -> impl Iterator<Item = i8> {
+    let mut previous_value = 0i32;
     let mut pre_window = BlurHalfWindow::<8>::new_i8(0);
     let mut pre_sum: i32 = 0;
     let mut post_window = BlurHalfWindow::<8>::new_i8(0);
@@ -224,174 +232,164 @@ pub fn derivative_2_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<It
     let mut current: i8 = 0;
     let factor: i32 = (blur_size as i32 * 2) + 1;
 
-    input.iter().copied().chain(repeat(0)).map(move |value| {
+    input.chain(repeat(0)).map(move |value| {
         let value = value as i32;
         let current_d1 = value - previous_value;
-        let current_d2 = previous_d1 - current_d1;
-        previous_d1 = current_d1;
         previous_value = value;
         (_, post_sum) = post_window.tick_i8_n(current, post_sum, blur_size);
         (current, pre_sum) =
-            pre_window.tick_i8_n(scale_to_small_i8(current_d2), pre_sum, blur_size);
+            pre_window.tick_i8_n(scale_to_small_i8(current_d1), pre_sum, blur_size);
         let current_blurred = current as i32 + pre_sum + post_sum;
         (current_blurred / factor) as i8
     })
 }
 
-pub fn derivative_2_n_buffer(input: &[u8], output: &mut [i8], blur_size: usize) {
-    derivative_2_n(input, blur_size)
-        .skip(blur_size)
+pub fn derivative_1_buffer(input: &[u8], output: &mut [i8], blur_size: usize, blur_size_d1: usize) {
+    let blurred = blur_n(input, blur_size);
+    let derivative_1 = derivative_u8_n(blurred, blur_size_d1);
+    derivative_1
+        .skip(blur_size + blur_size_d1)
         .take(input.len())
         .enumerate()
         .for_each(|(i, v)| output[i] = v);
 }
 
-pub fn derivative<'a>(
-    input: impl Iterator<Item = (u8, i32)> + 'a,
-) -> impl Iterator<Item = (u8, i32)> + 'a {
-    let mut previous: i32 = 0;
-    input.map(move |(original, value)| {
-        let delta = value - previous;
-        previous = value;
-        (original, delta)
-    })
-}
-
-#[test]
-fn test_derivative() {
-    let input: Vec<i32> = vec![5, 9, 7, 6, 3, 0, -2, -5, 3];
-    let expected: Vec<i32> = vec![5, 4, -2, -1, -3, -3, -2, -3, 8];
-    let output: Vec<i32> = derivative(input.iter().copied().map(|v| (v as u8, v)))
-        .map(|(_, v)| v)
-        .collect();
-    assert_eq!(expected, output);
-}
-
-pub fn derivative_buffer_u8(input: &[u8], output: &mut [i32]) {
-    derivative(input.iter().copied().map(|v| (v, v as i32)))
-        .map(|(_, v)| v)
+pub fn derivative_2_buffer(
+    input: &[u8],
+    output: &mut [i8],
+    blur_size: usize,
+    blur_size_d1: usize,
+    blur_size_d2: usize,
+) {
+    let blurred = blur_n(input, blur_size);
+    let derivative_1 = derivative_u8_n(blurred, blur_size_d1);
+    let derivative_2 = derivative_i8_n(derivative_1, blur_size_d1);
+    derivative_2
+        .skip(blur_size + blur_size_d1 + blur_size_d2)
+        .take(input.len())
         .enumerate()
-        .for_each(|(i, v)| output[i] = v)
-}
-
-pub fn derivative_buffer_i32(input: &[i32], output: &mut [i32]) {
-    derivative(input.iter().copied().map(|v| (v as u8, v)))
-        .map(|(_, v)| v)
-        .enumerate()
-        .for_each(|(i, v)| output[i] = v)
+        .for_each(|(i, v)| output[i] = v);
 }
 
 pub fn min_max<'a>(
-    input: impl Iterator<Item = (isize, u8, i32)> + 'a,
-) -> impl Iterator<Item = (isize, u8, i32)> + 'a {
+    input: impl Iterator<Item = (usize, i8)> + 'a,
+) -> impl Iterator<Item = (usize, i8)> + 'a {
     let mut increasing: bool = false;
-    let mut previous: i32 = 0;
-    input.filter_map(move |(index, original, next)| {
+    let mut decreasing: bool = false;
+    let mut previous: i8 = 0;
+    input.filter_map(move |(index, next)| {
         let current = previous;
         previous = next;
-        if increasing {
-            if next < current {
+
+        if next < current {
+            decreasing = true;
+            if increasing {
                 increasing = false;
-                Some((index - 1, original, current))
+                Some((index - 1, current))
+            } else {
+                None
+            }
+        } else if next > current {
+            increasing = true;
+            if decreasing {
+                decreasing = false;
+                Some((index - 1, current))
             } else {
                 None
             }
         } else {
-            if next > current {
-                increasing = true;
-                Some((index - 1, original, current))
-            } else {
-                None
-            }
+            increasing = false;
+            decreasing = false;
+            None
         }
     })
 }
 
 #[test]
 fn test_min_max() {
-    let input: Vec<i32> = vec![5, 9, 7, 6, 3, 0, -2, -5, 3];
-    let expected: Vec<(isize, u8, i32)> = vec![(-1, 0, 0), (1, 2, 9), (7, 8, -5)];
-    let output: Vec<(isize, u8, i32)> = min_max(
-        input
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, v)| (i as isize, i as u8, v)),
-    )
-    .collect();
+    let input: Vec<i8> = vec![5, 9, 7, 6, 3, 0, -2, -5, 3];
+    let expected: Vec<(usize, i8)> = vec![(1, 9), (7, -5)];
+    let output: Vec<(usize, i8)> = min_max(input.iter().copied().enumerate()).collect();
     assert_eq!(expected, output);
 }
 
 #[derive(Clone, Copy)]
 pub struct CurvePoint {
     pub index: usize,
-    pub value: u8,
-    pub d2: i32,
+    pub d2: i8,
 }
 
 impl CurvePoint {
-    pub fn zero(index: usize, value: u8) -> Self {
-        Self {
-            index,
-            value,
-            d2: 0,
-        }
+    pub fn zero(index: usize) -> Self {
+        Self { index, d2: 0 }
     }
 }
 
 pub fn get_curve_points_blur_n<'a>(
     input: &'a [u8],
     blur_size: usize,
+    blur_size_d1: usize,
+    blur_size_d2: usize,
 ) -> impl Iterator<Item = CurvePoint> + 'a {
     let length = input.len();
-    let signed_skip: isize = blur_size as isize + 4;
-    let blurred = blur_n(input, blur_size).map(|b| (b as u8, b));
-    let d1 = derivative(blurred);
-    let d2 = derivative(d1);
-    let indexed_d2 = d2
-        .zip(-signed_skip..)
-        .map(|((original, d2), index)| (index, original, d2));
-    let curve_points = min_max(indexed_d2.filter(|(i, _, _)| *i >= 0).take(length));
-    curve_points.map(|(index, value, d2)| CurvePoint {
-        index: index as usize,
-        value,
-        d2,
-    })
+    let skip = blur_size + blur_size_d1 + blur_size_d2 + 1;
+    let blurred = blur_n(input, blur_size);
+    let d1 = derivative_u8_n(blurred, blur_size_d1);
+    let d2 = derivative_i8_n(d1, blur_size_d2);
+    let indexed_d2 = d2.skip(skip).enumerate();
+    let curve_points = min_max(indexed_d2.filter(move |(i, _)| *i < length).take(length));
+    curve_points.map(|(index, d2)| CurvePoint { index, d2 })
 }
 
-pub fn get_curve_points_blur<'a, const SIZE: usize>(
+/*
+pub fn get_curve_points_blur<
+    'a,
+    const BLUR_SIZE: usize,
+    const BLUR_SIZE_D1: usize,
+    const BLUR_SIZE_D2: usize,
+>(
     input: &'a [u8],
 ) -> impl Iterator<Item = CurvePoint> + 'a {
     let length = input.len();
-    let signed_skip: isize = SIZE as isize + 4;
-    let blurred = blur::<SIZE>(input).map(|b| (b as u8, b));
-    let d1 = derivative(blurred);
-    let d2 = derivative(d1);
-    let indexed_d2 = d2
-        .zip(-signed_skip..)
-        .map(|((original, d2), index)| (index, original, d2));
-    let curve_points = min_max(indexed_d2.filter(|(i, _, _)| *i >= 0).take(length));
-    curve_points.map(|(index, value, d2)| CurvePoint {
-        index: index as usize,
-        value,
+    const SKIP: usize = (BLUR_SIZE + BLUR_SIZE_D1 + BLUR_SIZE_D2 + 1);
+    let blurred = blur_n(input, blur_size);
+    let d1 = derivative_u8_n(blurred, blur_size_d1);
+    let d2 = derivative_i8_n(d1, blur_size_d2);
+    let indexed_d2 = d2.skip(skip).enumerate();
+    let curve_points = min_max(indexed_d2.filter(|(i, _)| *i >= 0).take(length));
+    curve_points.map(|(index, d2)| CurvePoint {
+        index,
+        value: input[index],
         d2,
     })
 }
+*/
 
-pub fn segment_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
+pub fn segment_buffer(
+    input: &[u8],
+    output: &mut [u8],
+    blur_size: usize,
+    blur_size_d1: usize,
+    blur_size_d2: usize,
+) {
     let length = input.len();
     let mut curve_points = Vec::with_capacity(length + 2);
-    curve_points.push(CurvePoint::zero(0, input[0]));
-    curve_points.extend(get_curve_points_blur_n(input, blur_size));
-    curve_points.push(CurvePoint::zero(length - 1, input[length - 1]));
+    curve_points.push(CurvePoint::zero(0));
+    curve_points.extend(get_curve_points_blur_n(
+        input,
+        blur_size,
+        blur_size_d1,
+        blur_size_d2,
+    ));
+    curve_points.push(CurvePoint::zero(length - 1));
     let mut points_iter = curve_points.into_iter();
     let mut current = points_iter.next().unwrap();
     for next in points_iter {
         let current_index = current.index as i32;
         let next_index = next.index as i32;
         let delta_index = next_index - current_index;
-        let current_value = current.value as i32;
-        let next_value = next.value as i32;
+        let current_value = input[current.index] as i32;
+        let next_value = input[next.index] as i32;
         let delta_value = next_value - current_value;
         for i in 0..delta_index {
             let index = (current_index + i) as usize;
@@ -409,6 +407,6 @@ fn test_segment_buffer() {
     let input: Vec<u8> = vec![1, 2, 7, 6, 5, 0, 0, 3, 7];
     let expected: Vec<u8> = vec![1, 2, 7, 6, 5, 0, 0, 3, 7];
     let mut output = [0u8; 9];
-    segment_buffer(&input, &mut output, 1);
+    segment_buffer(&input, &mut output, 1, 1, 1);
     assert_eq!(expected, output);
 }

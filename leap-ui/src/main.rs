@@ -2,7 +2,7 @@ use leap_device::device::{
     LeapDevice, LeapMode, LeapStream, LEAP_MAX_FRAME_SIZE, LEAP_MAX_X_RESOLUTION,
 };
 use leap_device::processing::{
-    blur_n_buffer, derivative_1_n_buffer, derivative_2_n_buffer, get_curve_points_blur_n,
+    blur_n_buffer, derivative_1_buffer, derivative_2_buffer, get_curve_points_blur_n,
     segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE, MIN_BLUR_SIZE,
 };
 use leap_device::vision::{
@@ -114,6 +114,8 @@ impl<'s> UiState<'s> {
                 &self.current_left_line,
                 output,
                 self.line_processing_params.blur_size,
+                self.line_processing_params.blur_size_d1,
+                self.line_processing_params.blur_size_d2,
             ),
         }
     }
@@ -131,6 +133,8 @@ impl<'s> UiState<'s> {
                 &self.current_right_line,
                 output,
                 self.line_processing_params.blur_size,
+                self.line_processing_params.blur_size_d1,
+                self.line_processing_params.blur_size_d2,
             ),
         }
     }
@@ -200,11 +204,15 @@ impl<'s> UiState<'s> {
                             &left_line_raw[..],
                             &mut left_line_processed,
                             self.line_processing_params.blur_size,
+                            self.line_processing_params.blur_size_d1,
+                            self.line_processing_params.blur_size_d2,
                         );
                         segment_buffer(
                             &right_line_raw[..],
                             &mut right_line_processed,
                             self.line_processing_params.blur_size,
+                            self.line_processing_params.blur_size_d1,
+                            self.line_processing_params.blur_size_d2,
                         );
                     }
                 }
@@ -522,9 +530,10 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d1 {
                             let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
-                            derivative_1_n_buffer(
+                            derivative_1_buffer(
                                 &self.current_left_line,
                                 &mut d,
+                                self.line_processing_params.blur_size,
                                 self.line_processing_params.blur_size_d1,
                             );
 
@@ -541,9 +550,11 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d2 {
                             let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
-                            derivative_2_n_buffer(
+                            derivative_2_buffer(
                                 &self.current_left_line,
                                 &mut d,
+                                self.line_processing_params.blur_size,
+                                self.line_processing_params.blur_size_d1,
                                 self.line_processing_params.blur_size_d2,
                             );
 
@@ -562,10 +573,14 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_left_line,
                                 self.line_processing_params.blur_size,
+                                self.line_processing_params.blur_size_d1,
+                                self.line_processing_params.blur_size_d2,
                             );
 
-                            values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
-                                .for_each(|l| plot_ui.line(l.color(Color32::RED)));
+                            values_to_vertical_lines(
+                                curve_points.map(|p| (p.index, self.current_left_line[p.index])),
+                            )
+                            .for_each(|l| plot_ui.line(l.color(Color32::RED)));
                         }
                     }
 
@@ -583,9 +598,10 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d1 {
                             let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
-                            derivative_1_n_buffer(
+                            derivative_1_buffer(
                                 &self.current_right_line,
                                 &mut d,
+                                self.line_processing_params.blur_size,
                                 self.line_processing_params.blur_size_d1,
                             );
 
@@ -602,9 +618,11 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d2 {
                             let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
-                            derivative_2_n_buffer(
+                            derivative_2_buffer(
                                 &self.current_right_line,
                                 &mut d,
+                                self.line_processing_params.blur_size,
+                                self.line_processing_params.blur_size_d1,
                                 self.line_processing_params.blur_size_d2,
                             );
 
@@ -623,10 +641,14 @@ impl<'s> lib::eframe::App for UiState<'s> {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_right_line,
                                 self.line_processing_params.blur_size,
+                                self.line_processing_params.blur_size_d1,
+                                self.line_processing_params.blur_size_d2,
                             );
 
-                            values_to_vertical_lines(curve_points.map(|p| (p.index, p.value)))
-                                .for_each(|l| plot_ui.line(l.color(Color32::GREEN)));
+                            values_to_vertical_lines(
+                                curve_points.map(|p| (p.index, self.current_right_line[p.index])),
+                            )
+                            .for_each(|l| plot_ui.line(l.color(Color32::GREEN)));
                         }
                     }
                 });
