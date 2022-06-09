@@ -3,7 +3,8 @@ use leap_device::device::{
 };
 use leap_device::processing::{
     blur_n_buffer, derivative_1_buffer, derivative_2_buffer, get_curve_points_blur_n,
-    segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE, MIN_BLUR_SIZE,
+    segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE_DERIVATIVE, MAX_BLUR_SIZE_VALUE,
+    MAX_DERIVATIVE_SCALING, MIN_BLUR_SIZE, MIN_DERIVATIVE_SCALING,
 };
 use leap_device::vision::{
     LensModelParams, LensModelParamsData, LineReader, LEAP_BARREL_DISTORTION_MAX,
@@ -17,7 +18,23 @@ use lib::eframe::{egui, CreationContext};
 const LEAP_MODE: LeapMode = LeapMode::m640x480();
 const BUFFER_COUNT: u32 = 4;
 
-const DERIVATIVE_SCALING: i32 = 16;
+const DISPLAY_DERIVATIVE_SCALING: i32 = 16;
+fn derivative_scaling(params_scaling: i16) -> i32 {
+    let s = params_scaling as i32;
+    if s < DISPLAY_DERIVATIVE_SCALING {
+        DISPLAY_DERIVATIVE_SCALING / s
+    } else if s > DISPLAY_DERIVATIVE_SCALING {
+        s / DISPLAY_DERIVATIVE_SCALING
+    } else {
+        1
+    }
+}
+fn derivative_scaling_d1(params: &LineProcessingParameters) -> i32 {
+    derivative_scaling(params.derivative_scaling_d1)
+}
+fn derivative_scaling_d2(params: &LineProcessingParameters) -> i32 {
+    derivative_scaling(params.derivative_scaling_d2)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProcessingDisplay {
@@ -113,9 +130,7 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_left_line,
                 output,
-                self.line_processing_params.blur_size,
-                self.line_processing_params.blur_size_d1,
-                self.line_processing_params.blur_size_d2,
+                &self.line_processing_params,
             ),
         }
     }
@@ -132,9 +147,7 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_right_line,
                 output,
-                self.line_processing_params.blur_size,
-                self.line_processing_params.blur_size_d1,
-                self.line_processing_params.blur_size_d2,
+                &self.line_processing_params,
             ),
         }
     }
@@ -203,16 +216,12 @@ impl<'s> UiState<'s> {
                         segment_buffer(
                             &left_line_raw[..],
                             &mut left_line_processed,
-                            self.line_processing_params.blur_size,
-                            self.line_processing_params.blur_size_d1,
-                            self.line_processing_params.blur_size_d2,
+                            &self.line_processing_params,
                         );
                         segment_buffer(
                             &right_line_raw[..],
                             &mut right_line_processed,
-                            self.line_processing_params.blur_size,
-                            self.line_processing_params.blur_size_d1,
-                            self.line_processing_params.blur_size_d2,
+                            &self.line_processing_params,
                         );
                     }
                 }
@@ -370,7 +379,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 ui.add(
                     egui::Slider::new(
                         &mut self.line_processing_params.blur_size,
-                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE_VALUE,
                     )
                     .text("Blur Size"),
                 );
@@ -385,7 +394,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 ui.add(
                     egui::Slider::new(
                         &mut self.line_processing_params.blur_size_d1,
-                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE_DERIVATIVE,
                     )
                     .text("Blur Size d1"),
                 );
@@ -400,9 +409,39 @@ impl<'s> lib::eframe::App for UiState<'s> {
                 ui.add(
                     egui::Slider::new(
                         &mut self.line_processing_params.blur_size_d2,
-                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE,
+                        MIN_BLUR_SIZE..=MAX_BLUR_SIZE_DERIVATIVE,
                     )
                     .text("Blur Size d2"),
+                );
+            });
+            ui.horizontal(|ui| {
+                if ui.button("-").clicked() {
+                    self.line_processing_params.derivative_scaling_d1 -= 1;
+                }
+                if ui.button("+").clicked() {
+                    self.line_processing_params.derivative_scaling_d1 += 1;
+                }
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.line_processing_params.derivative_scaling_d1,
+                        MIN_DERIVATIVE_SCALING..=MAX_DERIVATIVE_SCALING,
+                    )
+                    .text("Derivative Scaling d2"),
+                );
+            });
+            ui.horizontal(|ui| {
+                if ui.button("-").clicked() {
+                    self.line_processing_params.derivative_scaling_d2 -= 1;
+                }
+                if ui.button("+").clicked() {
+                    self.line_processing_params.derivative_scaling_d2 += 1;
+                }
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.line_processing_params.derivative_scaling_d2,
+                        MIN_DERIVATIVE_SCALING..=MAX_DERIVATIVE_SCALING,
+                    )
+                    .text("Derivative Scaling d2"),
                 );
             });
             self.line_processing_params.fix();
@@ -529,19 +568,23 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         );
 
                         if self.display_line_d1 {
-                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
                             derivative_1_buffer(
                                 &self.current_left_line,
                                 &mut d,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
+                                &self.line_processing_params,
                             );
 
                             plot_ui.line(
                                 Line::new(values_i32_to_line_points(
                                     d.iter()
                                         .copied()
-                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .map(|v| {
+                                            v as i32
+                                                * derivative_scaling_d1(
+                                                    &self.line_processing_params,
+                                                )
+                                        })
                                         .enumerate(),
                                 ))
                                 .color(Color32::RED),
@@ -549,20 +592,23 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         }
 
                         if self.display_line_d2 {
-                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
                             derivative_2_buffer(
                                 &self.current_left_line,
                                 &mut d,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
-                                self.line_processing_params.blur_size_d2,
+                                &self.line_processing_params,
                             );
 
                             plot_ui.line(
                                 Line::new(values_i32_to_line_points(
                                     d.iter()
                                         .copied()
-                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .map(|v| {
+                                            v as i32
+                                                * derivative_scaling_d2(
+                                                    &self.line_processing_params,
+                                                )
+                                        })
                                         .enumerate(),
                                 ))
                                 .color(Color32::RED),
@@ -572,9 +618,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         if self.display_curve_points {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_left_line,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
-                                self.line_processing_params.blur_size_d2,
+                                &self.line_processing_params,
                             );
 
                             values_to_vertical_lines(
@@ -597,19 +641,23 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         );
 
                         if self.display_line_d1 {
-                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
                             derivative_1_buffer(
                                 &self.current_right_line,
                                 &mut d,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
+                                &self.line_processing_params,
                             );
 
                             plot_ui.line(
                                 Line::new(values_i32_to_line_points(
                                     d.iter()
                                         .copied()
-                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .map(|v| {
+                                            v as i32
+                                                * derivative_scaling_d1(
+                                                    &self.line_processing_params,
+                                                )
+                                        })
                                         .enumerate(),
                                 ))
                                 .color(Color32::GREEN),
@@ -617,20 +665,23 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         }
 
                         if self.display_line_d2 {
-                            let mut d = vec![0i8; LEAP_MAX_X_RESOLUTION];
+                            let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
                             derivative_2_buffer(
                                 &self.current_right_line,
                                 &mut d,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
-                                self.line_processing_params.blur_size_d2,
+                                &self.line_processing_params,
                             );
 
                             plot_ui.line(
                                 Line::new(values_i32_to_line_points(
                                     d.iter()
                                         .copied()
-                                        .map(|v| v as i32 * DERIVATIVE_SCALING)
+                                        .map(|v| {
+                                            v as i32
+                                                * derivative_scaling_d2(
+                                                    &self.line_processing_params,
+                                                )
+                                        })
                                         .enumerate(),
                                 ))
                                 .color(Color32::GREEN),
@@ -640,9 +691,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         if self.display_curve_points {
                             let curve_points = get_curve_points_blur_n(
                                 &self.current_right_line,
-                                self.line_processing_params.blur_size,
-                                self.line_processing_params.blur_size_d1,
-                                self.line_processing_params.blur_size_d2,
+                                &self.line_processing_params,
                             );
 
                             values_to_vertical_lines(
