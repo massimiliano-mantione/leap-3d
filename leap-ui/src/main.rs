@@ -4,7 +4,8 @@ use leap_device::device::{
 use leap_device::processing::{
     blur_n_buffer, derivative_1_buffer, derivative_2_buffer, get_curve_points_blur_n,
     segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE_DERIVATIVE, MAX_BLUR_SIZE_VALUE,
-    MAX_DERIVATIVE_SCALING, MIN_BLUR_SIZE, MIN_DERIVATIVE_SCALING,
+    MAX_DERIVATIVE_SCALING, MAX_VALUE_SCALING, MIN_BLUR_SIZE, MIN_DERIVATIVE_SCALING,
+    MIN_VALUE_SCALING,
 };
 use leap_device::vision::{
     LensModelParams, LensModelParamsData, LineReader, LEAP_BARREL_DISTORTION_MAX,
@@ -125,7 +126,7 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Blur => blur_n_buffer(
                 &self.current_left_line,
                 output,
-                self.line_processing_params.blur_size,
+                &self.line_processing_params,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_left_line,
@@ -142,7 +143,7 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Blur => blur_n_buffer(
                 &self.current_right_line,
                 output,
-                self.line_processing_params.blur_size,
+                &self.line_processing_params,
             ),
             ProcessingDisplay::Segmented => segment_buffer(
                 &self.current_right_line,
@@ -204,12 +205,12 @@ impl<'s> UiState<'s> {
                         blur_n_buffer(
                             &left_line_raw[..],
                             &mut left_line_processed,
-                            self.line_processing_params.blur_size,
+                            &self.line_processing_params,
                         );
                         blur_n_buffer(
                             &right_line_raw[..],
                             &mut right_line_processed,
-                            self.line_processing_params.blur_size,
+                            &self.line_processing_params,
                         );
                     }
                     ProcessingDisplay::Segmented => {
@@ -412,6 +413,21 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         MIN_BLUR_SIZE..=MAX_BLUR_SIZE_DERIVATIVE,
                     )
                     .text("Blur Size d2"),
+                );
+            });
+            ui.horizontal(|ui| {
+                if ui.button("-").clicked() {
+                    self.line_processing_params.value_scaling -= 1;
+                }
+                if ui.button("+").clicked() {
+                    self.line_processing_params.value_scaling += 1;
+                }
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.line_processing_params.value_scaling,
+                        MIN_VALUE_SCALING..=MAX_VALUE_SCALING,
+                    )
+                    .text("Value Scaling Bits"),
                 );
             });
             ui.horizontal(|ui| {

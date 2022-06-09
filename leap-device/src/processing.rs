@@ -3,6 +3,8 @@ use std::iter::repeat;
 pub const MIN_BLUR_SIZE: usize = 1;
 pub const MAX_BLUR_SIZE_VALUE: usize = 8;
 pub const MAX_BLUR_SIZE_DERIVATIVE: usize = 4;
+pub const MIN_VALUE_SCALING: u8 = 1;
+pub const MAX_VALUE_SCALING: u8 = 8;
 pub const MIN_DERIVATIVE_SCALING: i16 = 1;
 pub const MAX_DERIVATIVE_SCALING: i16 = 64;
 
@@ -11,6 +13,7 @@ pub struct LineProcessingParameters {
     pub blur_size: usize,
     pub blur_size_d1: usize,
     pub blur_size_d2: usize,
+    pub value_scaling: u8,
     pub derivative_scaling_d1: i16,
     pub derivative_scaling_d2: i16,
 }
@@ -21,33 +24,54 @@ impl Default for LineProcessingParameters {
             blur_size: MAX_BLUR_SIZE_VALUE,
             blur_size_d1: MAX_BLUR_SIZE_DERIVATIVE,
             blur_size_d2: MAX_BLUR_SIZE_DERIVATIVE,
+            value_scaling: MIN_VALUE_SCALING,
             derivative_scaling_d1: 16,
             derivative_scaling_d2: 4,
         }
     }
 }
 
+fn fix<T>(value: &mut T, min: T, max: T)
+where
+    T: Copy + Ord,
+{
+    if *value < min {
+        *value = min;
+    }
+    if *value > max {
+        *value = max;
+    }
+}
+
 impl LineProcessingParameters {
     pub fn fix(&mut self) {
-        if self.blur_size < MIN_BLUR_SIZE {
-            self.blur_size = MIN_BLUR_SIZE;
-        }
-        if self.blur_size_d1 < MIN_BLUR_SIZE {
-            self.blur_size_d1 = MIN_BLUR_SIZE;
-        }
-        if self.blur_size_d1 < MIN_BLUR_SIZE {
-            self.blur_size_d2 = MIN_BLUR_SIZE;
-        }
+        fix(&mut self.blur_size, MIN_BLUR_SIZE, MAX_BLUR_SIZE_VALUE);
+        fix(
+            &mut self.blur_size_d1,
+            MIN_BLUR_SIZE,
+            MAX_BLUR_SIZE_DERIVATIVE,
+        );
+        fix(
+            &mut self.blur_size_d2,
+            MIN_BLUR_SIZE,
+            MAX_BLUR_SIZE_DERIVATIVE,
+        );
 
-        if self.blur_size > MAX_BLUR_SIZE_VALUE {
-            self.blur_size = MAX_BLUR_SIZE_VALUE;
-        }
-        if self.blur_size_d1 > MAX_BLUR_SIZE_DERIVATIVE {
-            self.blur_size_d1 = MAX_BLUR_SIZE_DERIVATIVE;
-        }
-        if self.blur_size_d1 > MAX_BLUR_SIZE_DERIVATIVE {
-            self.blur_size_d2 = MAX_BLUR_SIZE_DERIVATIVE;
-        }
+        fix(
+            &mut self.value_scaling,
+            MIN_VALUE_SCALING,
+            MAX_VALUE_SCALING,
+        );
+        fix(
+            &mut self.derivative_scaling_d1,
+            MIN_DERIVATIVE_SCALING,
+            MAX_DERIVATIVE_SCALING,
+        );
+        fix(
+            &mut self.derivative_scaling_d2,
+            MIN_DERIVATIVE_SCALING,
+            MAX_DERIVATIVE_SCALING,
+        );
     }
 }
 
@@ -147,19 +171,23 @@ fn test_tick_n() {
     assert_eq!(sum, 0);
 }
 
-pub fn blur_n<'a>(input: &'a [u8], blur_size: usize) -> impl Iterator<Item = u8> + 'a {
+pub fn blur_n<'a>(
+    input: &'a [u8],
+    params: &'a LineProcessingParameters,
+) -> impl Iterator<Item = u8> + 'a {
     let fill = input[0];
     let tail = input[input.len() - 1];
     let mut pre_window = BlurHalfWindowU8::<MAX_BLUR_SIZE_VALUE>::new(fill);
-    let mut pre_sum: i32 = (fill as i32) * (blur_size as i32);
+    let mut pre_sum: i32 = (fill as i32) * (params.blur_size as i32);
     let mut post_window = BlurHalfWindowU8::<MAX_BLUR_SIZE_VALUE>::new(fill);
-    let mut post_sum: i32 = (fill as i32) * (blur_size as i32);
+    let mut post_sum: i32 = (fill as i32) * (params.blur_size as i32);
     let mut current: u8 = fill;
-    let factor: i32 = (blur_size as i32 * 2) + 1;
+    let factor: i32 = (params.blur_size as i32 * 2) + 1;
 
     input.iter().copied().chain(repeat(tail)).map(move |value| {
-        (_, post_sum) = post_window.tick_n(current, post_sum, blur_size);
-        (current, pre_sum) = pre_window.tick_n(value, pre_sum, blur_size);
+        let value = value.saturating_mul(params.value_scaling);
+        (_, post_sum) = post_window.tick_n(current, post_sum, params.blur_size);
+        (current, pre_sum) = pre_window.tick_n(value, pre_sum, params.blur_size);
         let current_blurred = current as i32 + pre_sum + post_sum;
         (current_blurred / factor) as u8
     })
@@ -183,9 +211,9 @@ pub fn blur<'a, const SIZE: usize>(input: &'a [u8]) -> impl Iterator<Item = u8> 
     })
 }
 
-pub fn blur_n_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
-    blur_n(input, blur_size)
-        .skip(blur_size)
+pub fn blur_n_buffer(input: &[u8], output: &mut [u8], params: &LineProcessingParameters) {
+    blur_n(input, params)
+        .skip(params.blur_size)
         .take(input.len())
         .enumerate()
         .for_each(|(i, v)| output[i] = v);
@@ -193,19 +221,29 @@ pub fn blur_n_buffer(input: &[u8], output: &mut [u8], blur_size: usize) {
 
 #[test]
 fn test_blur_buffer_flat() {
+    let params = LineProcessingParameters {
+        blur_size: 4,
+        value_scaling: 0,
+        ..Default::default()
+    };
     let input: [u8; 9] = [9, 9, 9, 9, 9, 9, 9, 9, 9];
     let mut output = [0u8; 9];
     let expected: [u8; 9] = [9, 9, 9, 9, 9, 9, 9, 9, 9];
-    blur_n_buffer(&input, &mut output, 4);
+    blur_n_buffer(&input, &mut output, &params);
     assert_eq!(output.to_vec(), expected.to_vec());
 }
 
 #[test]
 fn test_blur_buffer_spike() {
+    let params = LineProcessingParameters {
+        blur_size: 4,
+        value_scaling: 0,
+        ..Default::default()
+    };
     let input: [u8; 9] = [9, 9, 9, 9, 18, 9, 9, 9, 9];
     let mut output = [0u8; 9];
     let expected: [u8; 9] = [10, 10, 10, 10, 10, 10, 10, 10, 10];
-    blur_n_buffer(&input, &mut output, 4);
+    blur_n_buffer(&input, &mut output, &params);
     assert_eq!(output.to_vec(), expected.to_vec());
 }
 
@@ -258,7 +296,7 @@ pub fn derivative_i16_n(
 }
 
 pub fn derivative_1_buffer(input: &[u8], output: &mut [i16], params: &LineProcessingParameters) {
-    let blurred = blur_n(input, params.blur_size);
+    let blurred = blur_n(input, params);
     let derivative_1 = derivative_u8_n(blurred, params.blur_size_d1, params.derivative_scaling_d1);
     derivative_1
         .skip(params.blur_size + params.blur_size_d1)
@@ -268,7 +306,7 @@ pub fn derivative_1_buffer(input: &[u8], output: &mut [i16], params: &LineProces
 }
 
 pub fn derivative_2_buffer(input: &[u8], output: &mut [i16], params: &LineProcessingParameters) {
-    let blurred = blur_n(input, params.blur_size);
+    let blurred = blur_n(input, params);
     let derivative_1 = derivative_u8_n(blurred, params.blur_size_d1, params.derivative_scaling_d1);
     let derivative_2 = derivative_i16_n(
         derivative_1,
@@ -338,11 +376,11 @@ impl CurvePoint {
 
 pub fn get_curve_points_blur_n<'a>(
     input: &'a [u8],
-    params: &LineProcessingParameters,
+    params: &'a LineProcessingParameters,
 ) -> impl Iterator<Item = CurvePoint> + 'a {
     let length = input.len();
     let skip = params.blur_size + params.blur_size_d1 + params.blur_size_d2 + 1;
-    let blurred = blur_n(input, params.blur_size);
+    let blurred = blur_n(input, params);
     let d1 = derivative_u8_n(blurred, params.blur_size_d1, params.derivative_scaling_d1);
     let d2 = derivative_i16_n(d1, params.blur_size_d2, params.derivative_scaling_d2);
     let indexed_d2 = d2.skip(skip).enumerate();
