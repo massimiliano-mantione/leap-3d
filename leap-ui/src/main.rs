@@ -20,21 +20,12 @@ const LEAP_MODE: LeapMode = LeapMode::m640x480();
 const BUFFER_COUNT: u32 = 4;
 
 const DISPLAY_DERIVATIVE_SCALING: i32 = 16;
-fn derivative_scaling(params_scaling: i16) -> i32 {
-    let s = params_scaling as i32;
-    if s < DISPLAY_DERIVATIVE_SCALING {
-        DISPLAY_DERIVATIVE_SCALING / s
-    } else if s > DISPLAY_DERIVATIVE_SCALING {
-        s / DISPLAY_DERIVATIVE_SCALING
-    } else {
-        1
-    }
+fn derivative_scaling_d1(v: i16, params: &LineProcessingParameters) -> i32 {
+    (v as i32) * DISPLAY_DERIVATIVE_SCALING / (params.derivative_scaling_d1 as i32)
 }
-fn derivative_scaling_d1(params: &LineProcessingParameters) -> i32 {
-    derivative_scaling(params.derivative_scaling_d1)
-}
-fn derivative_scaling_d2(params: &LineProcessingParameters) -> i32 {
-    derivative_scaling(params.derivative_scaling_d2)
+fn derivative_scaling_d2(v: i16, params: &LineProcessingParameters) -> i32 {
+    (v as i32) * DISPLAY_DERIVATIVE_SCALING
+        / ((params.derivative_scaling_d1 as i32) * (params.derivative_scaling_d2 as i32))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -596,10 +587,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                                     d.iter()
                                         .copied()
                                         .map(|v| {
-                                            v as i32
-                                                * derivative_scaling_d1(
-                                                    &self.line_processing_params,
-                                                )
+                                            derivative_scaling_d1(v, &self.line_processing_params)
                                         })
                                         .enumerate(),
                                 ))
@@ -620,10 +608,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                                     d.iter()
                                         .copied()
                                         .map(|v| {
-                                            v as i32
-                                                * derivative_scaling_d2(
-                                                    &self.line_processing_params,
-                                                )
+                                            derivative_scaling_d2(v, &self.line_processing_params)
                                         })
                                         .enumerate(),
                                 ))
@@ -669,10 +654,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                                     d.iter()
                                         .copied()
                                         .map(|v| {
-                                            v as i32
-                                                * derivative_scaling_d1(
-                                                    &self.line_processing_params,
-                                                )
+                                            derivative_scaling_d1(v, &self.line_processing_params)
                                         })
                                         .enumerate(),
                                 ))
@@ -693,10 +675,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                                     d.iter()
                                         .copied()
                                         .map(|v| {
-                                            v as i32
-                                                * derivative_scaling_d2(
-                                                    &self.line_processing_params,
-                                                )
+                                            derivative_scaling_d2(v, &self.line_processing_params)
                                         })
                                         .enumerate(),
                                 ))
