@@ -3,7 +3,7 @@ use leap_device::device::{
 };
 use leap_device::processing::{
     blur_n_buffer, derivative_1_buffer, derivative_2_buffer, get_curve_points_blur_n,
-    segment_buffer, LineProcessingParameters, MAX_BLUR_SIZE_DERIVATIVE, MAX_BLUR_SIZE_VALUE,
+    segment_buffer, LineProcessingParameters, PNum, MAX_BLUR_SIZE_DERIVATIVE, MAX_BLUR_SIZE_VALUE,
     MAX_DERIVATIVE_SCALING, MAX_VALUE_SCALING, MIN_BLUR_SIZE, MIN_DERIVATIVE_SCALING,
     MIN_VALUE_SCALING,
 };
@@ -114,12 +114,12 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Raw => {
                 output.copy_from_slice(&self.current_left_line);
             }
-            ProcessingDisplay::Blur => blur_n_buffer(
+            ProcessingDisplay::Blur => blur_n_buffer::<PNum>(
                 &self.current_left_line,
                 output,
                 &self.line_processing_params,
             ),
-            ProcessingDisplay::Segmented => segment_buffer(
+            ProcessingDisplay::Segmented => segment_buffer::<PNum>(
                 &self.current_left_line,
                 output,
                 &self.line_processing_params,
@@ -131,12 +131,12 @@ impl<'s> UiState<'s> {
             ProcessingDisplay::Raw => {
                 output.copy_from_slice(&self.current_right_line);
             }
-            ProcessingDisplay::Blur => blur_n_buffer(
+            ProcessingDisplay::Blur => blur_n_buffer::<PNum>(
                 &self.current_right_line,
                 output,
                 &self.line_processing_params,
             ),
-            ProcessingDisplay::Segmented => segment_buffer(
+            ProcessingDisplay::Segmented => segment_buffer::<PNum>(
                 &self.current_right_line,
                 output,
                 &self.line_processing_params,
@@ -193,24 +193,24 @@ impl<'s> UiState<'s> {
                         right_line_processed.clone_from_slice(&right_line_raw);
                     }
                     ProcessingDisplay::Blur => {
-                        blur_n_buffer(
+                        blur_n_buffer::<PNum>(
                             &left_line_raw[..],
                             &mut left_line_processed,
                             &self.line_processing_params,
                         );
-                        blur_n_buffer(
+                        blur_n_buffer::<PNum>(
                             &right_line_raw[..],
                             &mut right_line_processed,
                             &self.line_processing_params,
                         );
                     }
                     ProcessingDisplay::Segmented => {
-                        segment_buffer(
+                        segment_buffer::<PNum>(
                             &left_line_raw[..],
                             &mut left_line_processed,
                             &self.line_processing_params,
                         );
-                        segment_buffer(
+                        segment_buffer::<PNum>(
                             &right_line_raw[..],
                             &mut right_line_processed,
                             &self.line_processing_params,
@@ -576,7 +576,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d1 {
                             let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
-                            derivative_1_buffer(
+                            derivative_1_buffer::<PNum>(
                                 &self.current_left_line,
                                 &mut d,
                                 &self.line_processing_params,
@@ -597,7 +597,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d2 {
                             let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
-                            derivative_2_buffer(
+                            derivative_2_buffer::<PNum>(
                                 &self.current_left_line,
                                 &mut d,
                                 &self.line_processing_params,
@@ -617,7 +617,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         }
 
                         if self.display_curve_points {
-                            let curve_points = get_curve_points_blur_n(
+                            let curve_points = get_curve_points_blur_n::<PNum>(
                                 &self.current_left_line,
                                 &self.line_processing_params,
                             );
@@ -643,7 +643,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d1 {
                             let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
-                            derivative_1_buffer(
+                            derivative_1_buffer::<PNum>(
                                 &self.current_right_line,
                                 &mut d,
                                 &self.line_processing_params,
@@ -664,7 +664,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
 
                         if self.display_line_d2 {
                             let mut d = vec![0i16; LEAP_MAX_X_RESOLUTION];
-                            derivative_2_buffer(
+                            derivative_2_buffer::<PNum>(
                                 &self.current_right_line,
                                 &mut d,
                                 &self.line_processing_params,
@@ -684,7 +684,7 @@ impl<'s> lib::eframe::App for UiState<'s> {
                         }
 
                         if self.display_curve_points {
-                            let curve_points = get_curve_points_blur_n(
+                            let curve_points = get_curve_points_blur_n::<PNum>(
                                 &self.current_right_line,
                                 &self.line_processing_params,
                             );
